@@ -1,0 +1,36 @@
+{
+  "name": "pi-jev-reasoning-router-lite",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Jev decision-based thinking-level routing for Pi Agent — switch the routed model's reasoning level per prompt",
+  "type": "module",
+  "license": "MIT",
+  "author": "pcparts001",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "extension",
+    "reasoning",
+    "thinking",
+    "jev"
+  ],
+  "engines": {
+    "node": ">=20.3"
+  },
+  "files": [
+    "index.ts",
+    "jev.ts",
+    "criteria.ts",
+    "router.ts",
+    "logger.ts",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

@@ -1,0 +1,15 @@
+# Local-only files (never committed)
+CLAUDE.md
+
+# Dependencies (this extension has none, but just in case)
+node_modules/
+package-lock.json
+
+# OS
+.DS_Store
+
+# JEV_ROUTER_DUMP output: the real request body, which contains the full system prompt and the
+# prompt text. Never commit it.
+evidence/**/*payload*.json
+evidence/**/*dump*.json
+evidence/**/*_sent.json
