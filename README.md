@@ -9,18 +9,13 @@
 
 ## Install
 
-The repository is public, so either source form works. Use the HTTPS URL unless you have an SSH key registered
-with GitHub — the `ssh://` form fails with `Could not read from remote repository` for anyone without one.
-
 ### Option 1: `pi install` (recommended)
 
 ```sh
 pi install https://github.com/pcparts001/pi-jev-reasoning-router-lite
-# or, if you have a GitHub SSH key:
-pi install ssh://git@github.com/pcparts001/pi-jev-reasoning-router-lite
 ```
 
-**Uninstall** (pass the same source string you installed with):
+**Uninstall:**
 
 ```sh
 pi remove https://github.com/pcparts001/pi-jev-reasoning-router-lite
