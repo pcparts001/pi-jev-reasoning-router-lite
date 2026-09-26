@@ -2,7 +2,7 @@
 
 **Jev decision-based thinking-level routing** for Pi Agent.
 
-> **Plan requirement:** currently only the **Command Code GOAT plan** is supported. Jev is accessed through
+> **Plan requirement:** this extension currently works on the **Command Code GOAT plan** only. Jev is accessed through
 > Command Code as well, so users on the GOAT plan incur no additional cost for the routing decisions.
 
 > **⚠️ Experimental software.** This extension is in an experimental stage and is provided "as is", without warranty of any kind. **The author assumes no responsibility whatsoever** for any damage or loss arising from its use, including billing on your model provider or on Command Code.
