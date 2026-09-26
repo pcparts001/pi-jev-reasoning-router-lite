@@ -6,6 +6,10 @@
 > (`TYPESAFE_API_KEY`, billed per input token, output free) or the Command Code proxy (`COMMANDCODE_API_KEY`, whose
 > usage counts against the GOAT plan's token count). Everything else is provider-independent: the routed model can
 > be any model registered in pi. See "Jev provider" below.
+>
+> **Upgrading from the first release?** The Jev route changed from the Command Code proxy to TypeSafe's own API. Set
+> `TYPESAFE_API_KEY` to use the new default, or pin `JEV_ROUTER_PROVIDER=commandcode` to keep the previous behavior.
+> With neither, nothing breaks but every decision fails safe to `high` (no cost saving, no quality loss).
 
 > **⚠️ Experimental software.** This extension is in an experimental stage and is provided "as is", without warranty of any kind. **The author assumes no responsibility whatsoever** for any damage or loss arising from its use, including billing on your model provider, on TypeSafe, or on Command Code.
 
