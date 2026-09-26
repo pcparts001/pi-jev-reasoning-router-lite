@@ -9,19 +9,29 @@
 
 ## Install
 
+The repository is public, so either source form works. Use the HTTPS URL unless you have an SSH key registered
+with GitHub — the `ssh://` form fails with `Could not read from remote repository` for anyone without one.
+
 ### Option 1: `pi install` (recommended)
 
 ```sh
+pi install https://github.com/pcparts001/pi-jev-reasoning-router-lite
+# or, if you have a GitHub SSH key:
 pi install ssh://git@github.com/pcparts001/pi-jev-reasoning-router-lite
 ```
 
-**Uninstall:**
+**Uninstall** (pass the same source string you installed with):
 
 ```sh
-pi remove ssh://git@github.com/pcparts001/pi-jev-reasoning-router-lite
+pi remove https://github.com/pcparts001/pi-jev-reasoning-router-lite
 ```
 
-This removes the entry from `settings.json` **and** deletes the cloned directory, so the extension is gone completely.
+This removes the entry from `settings.json` **and** deletes the cloned directory
+(`~/.pi/agent/git/github.com/pcparts001/pi-jev-reasoning-router-lite`), so the extension is gone completely.
+
+Note that `pi install` resolves `package.json`, so the peer dependency (`@earendil-works/pi-coding-agent`) is
+installed into the clone: expect roughly **440 MB** of `node_modules`. The extension has no runtime dependencies
+of its own, so Option 2 avoids that entirely.
 
 ### Option 2: manual placement
 
@@ -30,7 +40,22 @@ git clone https://github.com/pcparts001/pi-jev-reasoning-router-lite.git \
   ~/.pi/agent/extensions/pi-jev-reasoning-router-lite
 ```
 
-`package.json` declares the entry point via `pi.extensions` (and pi would also find `index.ts` at the repository root), so no file renaming is required.
+`package.json` declares the entry point via `pi.extensions` (and pi would also find `index.ts` at the repository
+root), so no file renaming is required. Placed this way the extension is only about **250 KB**, because nothing
+runs `npm install`.
+
+**Uninstall** — a manual clone has no `settings.json` entry, so `pi remove` reports
+`No matching package found` and changes nothing. Delete the directory instead:
+
+```sh
+rm -rf ~/.pi/agent/extensions/pi-jev-reasoning-router-lite
+```
+
+**Update** with `git pull` (this clone is not managed by `pi update`):
+
+```sh
+git -C ~/.pi/agent/extensions/pi-jev-reasoning-router-lite pull
+```
 
 Note that an installed extension is auto-loaded, so **a jev decision runs on every prompt** (restricted to the
 routed models — see "Requirements"). To try it without auto-loading, load it explicitly instead:
