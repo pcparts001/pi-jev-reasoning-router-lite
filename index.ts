@@ -31,6 +31,9 @@
  *   JEV_ROUTER_DUMP=<path>         ... write the outgoing payload to that path as JSON in before_provider_request (T2)
  *   JEV_ROUTER_FORCE=off|low|high  ... force that level without calling jev (T2's three-level check)
  *   JEV_ROUTER_NOTIFY=low|downgrade|change|off ... how level-change messages are emitted (default low = on every low decision)
+ *   JEV_ROUTER_PROVIDER=typesafe|commandcode|auto ... which jev route answers (default typesafe = TypeSafe's own
+ *                                    API; auto = typesafe when TYPESAFE_API_KEY is set, otherwise commandcode).
+ *                                    The choice is recorded as jevProvider in the entry and the run log
  *   JEV_ROUTER_LOG=<path|off>      ... destination of the run log (JSONL). Default ~/.pi/agent/jev-router/runs.jsonl
  *                                    event: decision / skip / cache (input cache measurements; read-only)
  *                                    the prompt body is never written (length only). off/empty string disables it
@@ -39,7 +42,8 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { askJev, FAIL_SAFE_CHOICE } from "./jev.ts";
+import { askJev, FAIL_SAFE_CHOICE, JEV_PROVIDER_ENV, resolveJevProvider } from "./jev.ts";
+import type { JevProviderId, JevProviderSource } from "./jev.ts";
 import { appendLogRecord, resolveLogPath } from "./logger.ts";
 import {
   ALLOWED_MODELS_ENV,
@@ -92,6 +96,12 @@ interface Decision {
   source: DecisionSource;
   attempts: number;
   nonePolicy: typeof NONE_POLICY;
+  /** Which jev route answered (typesafe = native API / commandcode = proxy) */
+  jevProvider: JevProviderId;
+  /** How that route was chosen (default / explicit JEV_ROUTER_PROVIDER / auto key detection) */
+  jevProviderSource: JevProviderSource;
+  /** Set when JEV_ROUTER_PROVIDER had an unrecognized value (the default was used instead) */
+  jevProviderWarning?: string;
   error?: string;
 }
 
@@ -236,10 +246,13 @@ export default function jevReasoningRouter(pi: ExtensionAPI) {
       source: decision.source,
       attempts: decision.attempts,
       nonePolicy: decision.nonePolicy,
+      jevProvider: decision.jevProvider,
+      jevProviderSource: decision.jevProviderSource,
       model: route.model,
       previousLevel,
       requestedLevel: decision.level,
       effectiveLevel,
+      ...(decision.jevProviderWarning ? { jevProviderWarning: decision.jevProviderWarning } : {}),
       ...(decision.error ? { error: decision.error } : {}),
     });
 
@@ -267,12 +280,18 @@ export default function jevReasoningRouter(pi: ExtensionAPI) {
         latencyMs: decision.latencyMs,
         notifyMode: notice.mode,
         notified: ctx.hasUI && shouldNotifyLevel(notice),
+        jevProvider: decision.jevProvider,
+        jevProviderSource: decision.jevProviderSource,
+        ...(decision.jevProviderWarning ? { jevProviderWarning: decision.jevProviderWarning } : {}),
         ...(decision.error ? { error: decision.error } : {}),
       }),
     );
 
     if (ctx.hasUI && decision.source === "fail-safe") {
-      ctx.ui.notify(`pi-jev-reasoning-router: jev decision failed -> fail-safe ${effectiveLevel}`, "warning");
+      ctx.ui.notify(
+        `pi-jev-reasoning-router: jev (${decision.jevProvider}) decision failed -> fail-safe ${effectiveLevel}`,
+        "warning",
+      );
     }
   });
 
@@ -408,9 +427,13 @@ export default function jevReasoningRouter(pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       const config = resolveAllowedModels();
       const route = routeDecision(ctx.model, config);
+      const jev = resolveJevProvider();
+      const keyPresent = process.env[jev.provider.apiKeyEnv] ? "set" : "MISSING";
       const lines = [
         `model: ${route.model ?? "(unknown)"} -> routed: ${route.routed ? "yes" : `no (${route.reason})`}`,
         `allowedModels: ${config.allowed.length ? config.allowed.join(", ") : "(empty = stopped for every model)"} (${ALLOWED_MODELS_ENV}: ${config.source}${config.ignored.length ? ` / ignored: ${config.ignored.join(", ")}` : ""})`,
+        `jev provider: ${jev.provider.id} (${jev.provider.label}) [${jev.source}${jev.warning ? ` / ${jev.warning}` : ""}] (${JEV_PROVIDER_ENV}=${process.env[JEV_PROVIDER_ENV] ?? "unset"}. typesafe | commandcode | auto)`,
+        `jev route: ${jev.provider.endpoint} / model ${jev.provider.model} / key ${jev.provider.apiKeyEnv}=${keyPresent} (the value is never logged)`,
         `NONE_POLICY: ${NONE_POLICY} ("low" = §3-3 N1 / "off" = N2)`,
         `notify: ${parseNotifyMode()} (${NOTIFY_ENV}=${process.env[NOTIFY_ENV] ?? "unset"}. low=every low decision / downgrade / change / off)`,
         `thinkingLevel: ${pi.getThinkingLevel()}`,
@@ -438,6 +461,13 @@ async function decide(
   sessionSignal: AbortSignal | undefined,
   inFlight: Set<AbortController>,
 ): Promise<Decision> {
+  // Which jev route this run uses (metadata for the audit entry / log; the call itself re-resolves it)
+  const resolved = resolveJevProvider();
+  const providerFields = {
+    jevProvider: resolved.provider.id,
+    jevProviderSource: resolved.source,
+    ...(resolved.warning ? { jevProviderWarning: resolved.warning } : {}),
+  };
   const forcedLevel = parseForcedLevel(process.env[FORCE_ENV]);
   if (forcedLevel) {
     return {
@@ -448,6 +478,7 @@ async function decide(
       source: "forced",
       attempts: 0,
       nonePolicy: NONE_POLICY,
+      ...providerFields,
     };
   }
 
@@ -464,6 +495,9 @@ async function decide(
       source: result.failed ? "fail-safe" : "jev",
       attempts: result.attempts,
       nonePolicy: NONE_POLICY,
+      jevProvider: result.provider,
+      jevProviderSource: resolved.source,
+      ...(resolved.warning ? { jevProviderWarning: resolved.warning } : {}),
       ...(result.error ? { error: result.error } : {}),
     };
   } catch (error) {
@@ -476,6 +510,7 @@ async function decide(
       source: "fail-safe",
       attempts: 0,
       nonePolicy: NONE_POLICY,
+      ...providerFields,
       error: error instanceof Error ? error.message : String(error),
     };
   } finally {

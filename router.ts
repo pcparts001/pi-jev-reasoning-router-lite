@@ -5,6 +5,8 @@
  */
 
 import type { EffortChoice } from "./criteria.ts";
+// Type-only import (erased at runtime, so this file stays pure): the jev route ids live with the providers
+import type { JevProviderId, JevProviderSource } from "./jev.ts";
 
 /**
  * pi's ThinkingLevel.
@@ -169,7 +171,8 @@ export function routeDecision(
   model: RoutedModelLike | undefined,
   config: AllowedModelsConfig = resolveAllowedModels(),
 ): RouteDecision {
-  const label = model?.provider && model?.id ? `${model.provider}/${model.id}` : undefined;
+  if (!model) return { routed: false, reason: "model-unknown", model: undefined, allowed: config.allowed };
+  const label = model.provider && model.id ? `${model.provider}/${model.id}` : undefined;
   if (!label) return { routed: false, reason: "model-unknown", model: undefined, allowed: config.allowed };
   if (config.allowed.length === 0) {
     return { routed: false, reason: "no-allowed-models", model: label, allowed: config.allowed };
@@ -297,6 +300,10 @@ export interface DecisionLogRecord extends LogContext {
   latencyMs: number;
   notifyMode: NotifyMode;
   notified: boolean;
+  /** Which jev route answered (`typesafe` = native API / `commandcode` = proxy); not the routed model's provider */
+  jevProvider?: JevProviderId;
+  /** How the jev provider was chosen (`default` = `JEV_ROUTER_PROVIDER` unset) */
+  jevProviderSource?: JevProviderSource;
   /** Summary of why it fell back to the fail-safe (never contains the API key) */
   error?: string;
 }

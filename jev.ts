@@ -2,9 +2,17 @@
  * D_08_A8 router: calling jev (TypeSafe System One)
  *
  * Specification: design spec §6 (endpoint, auth, UA, model, timeout)
- *  - POST https://api.commandcode.ai/provider/v1/systemone (Command Code only. OpenRouter is forbidden)
- *  - Authorization: Bearer $COMMANDCODE_API_KEY / User-Agent: pi-jev-reasoning-router/1.0 (required to get past Cloudflare)
- *  - model: typesafe/jev / timeout 3 seconds / 1 retry / fail-safe on failure (high)
+ *  - default provider: the native TypeSafe endpoint
+ *      POST https://api.typesafe.ai/v1/systemone
+ *      Authorization: Bearer $TYPESAFE_API_KEY / model: jev-latest (resolves to jev-1.13.0)
+ *  - optional provider: the Command Code proxy (unchanged from the original release)
+ *      POST https://api.commandcode.ai/provider/v1/systemone (Command Code only. OpenRouter is forbidden)
+ *      Authorization: Bearer $COMMANDCODE_API_KEY / User-Agent: pi-jev-reasoning-router/1.0
+ *      (the UA is required to get past Cloudflare) / model: typesafe/jev
+ *  - the provider is chosen with `JEV_ROUTER_PROVIDER` = typesafe (default) | commandcode | auto
+ *  - both providers return the same response shape (`answers["effort"].choice`), because the native API is
+ *    what the proxy forwards; only the endpoint / model name / key variable names differ.
+ *  - timeout 3 seconds / 1 retry / fail-safe on failure (high)
  *
  * The API key is only read from the environment; its value never appears in logs, artifacts, or exception messages.
  */
@@ -18,10 +26,103 @@ import {
   type EffortChoice,
 } from "./criteria.ts";
 
-export const JEV_ENDPOINT = "https://api.commandcode.ai/provider/v1/systemone";
-export const JEV_MODEL = "typesafe/jev";
 export const JEV_USER_AGENT = "pi-jev-reasoning-router/1.0";
-export const JEV_API_KEY_ENV = "COMMANDCODE_API_KEY";
+
+// ============================================================================
+// Providers (the same question, two routes to jev)
+// ============================================================================
+
+export type JevProviderId = "typesafe" | "commandcode";
+
+export interface JevProvider {
+  id: JevProviderId;
+  /** Name used in logs, notifications and `/jev-router` */
+  label: string;
+  endpoint: string;
+  /** The model name **as that endpoint expects it** (the two providers differ here) */
+  model: string;
+  /** Environment variable holding the API key for this provider */
+  apiKeyEnv: string;
+  /** User-Agent to send when the endpoint requires one (the proxy's Cloudflare blocks default UAs, §6) */
+  userAgent?: string;
+}
+
+export const JEV_PROVIDERS: Readonly<Record<JevProviderId, JevProvider>> = {
+  /** TypeSafe's own API (§6 replaced by the native route; the model is `jev-latest` = `jev-1.13.0`) */
+  typesafe: {
+    id: "typesafe",
+    label: "TypeSafe (native)",
+    endpoint: "https://api.typesafe.ai/v1/systemone",
+    model: "jev-latest",
+    apiKeyEnv: "TYPESAFE_API_KEY",
+  },
+  /** The Command Code proxy (the original route; `typesafe/jev` is a provider-scoped model name) */
+  commandcode: {
+    id: "commandcode",
+    label: "Command Code (proxy)",
+    endpoint: "https://api.commandcode.ai/provider/v1/systemone",
+    model: "typesafe/jev",
+    apiKeyEnv: "COMMANDCODE_API_KEY",
+    userAgent: JEV_USER_AGENT,
+  },
+};
+
+/** Selector environment variable: `typesafe` (default) | `commandcode` | `auto` */
+export const JEV_PROVIDER_ENV = "JEV_ROUTER_PROVIDER";
+/** §6: the native TypeSafe endpoint is the default route */
+export const DEFAULT_JEV_PROVIDER_ID: JevProviderId = "typesafe";
+/** `auto` = prefer TypeSafe when `TYPESAFE_API_KEY` is set, otherwise fall back to Command Code */
+export const JEV_PROVIDER_AUTO = "auto";
+
+/**
+ * Compatibility aliases: the endpoint / model / key variable of the **default provider**.
+ * They are kept so that existing references keep working; new code should read `JEV_PROVIDERS`.
+ */
+export const JEV_ENDPOINT = JEV_PROVIDERS[DEFAULT_JEV_PROVIDER_ID].endpoint;
+export const JEV_MODEL = JEV_PROVIDERS[DEFAULT_JEV_PROVIDER_ID].model;
+export const JEV_API_KEY_ENV = JEV_PROVIDERS[DEFAULT_JEV_PROVIDER_ID].apiKeyEnv;
+
+/** The subset of the environment this module reads (a plain object is accepted so tests can stub it) */
+export type JevEnvLike = Record<string, string | undefined>;
+
+export type JevProviderSource = "default" | "env" | "auto";
+
+export interface ResolvedJevProvider {
+  provider: JevProvider;
+  /** `env` = explicit selector / `auto` = key detection / `default` = unset or unrecognized */
+  source: JevProviderSource;
+  /** Set only when `JEV_ROUTER_PROVIDER` had an unrecognized value (a note for the log, never fatal) */
+  warning?: string;
+}
+
+/**
+ * Resolve which provider answers the jev question.
+ *  - unset / empty            -> the default (`typesafe`)
+ *  - `typesafe` / `commandcode` -> that provider (source `env`)
+ *  - `auto`                   -> TypeSafe when `TYPESAFE_API_KEY` is set, otherwise Command Code (source `auto`)
+ *  - anything else            -> the default, with a warning (a typo must not stop the routing)
+ *
+ * It never throws and never reads the key value (only whether it is present).
+ */
+export function resolveJevProvider(env: JevEnvLike = process.env): ResolvedJevProvider {
+  const raw = (env[JEV_PROVIDER_ENV] ?? "").trim().toLowerCase();
+  if (!raw) return { provider: JEV_PROVIDERS[DEFAULT_JEV_PROVIDER_ID], source: "default" };
+  if (raw === JEV_PROVIDER_AUTO) {
+    // auto: the native route wins when its key is available; otherwise the proxy keeps working
+    const id: JevProviderId = env[JEV_PROVIDERS.typesafe.apiKeyEnv] ? "typesafe" : "commandcode";
+    return { provider: JEV_PROVIDERS[id], source: "auto" };
+  }
+  if (raw === "typesafe" || raw === "commandcode") return { provider: JEV_PROVIDERS[raw], source: "env" };
+  return {
+    provider: JEV_PROVIDERS[DEFAULT_JEV_PROVIDER_ID],
+    source: "default",
+    warning: `unknown ${JEV_PROVIDER_ENV}="${raw}" -> using ${DEFAULT_JEV_PROVIDER_ID}`,
+  };
+}
+
+// ============================================================================
+// §6: timeout / retry / fail-safe
+// ============================================================================
 
 /** §6: the timeout is 3 seconds (exceeding it is a fail-safe) */
 export const JEV_TIMEOUT_MS = 3000;
@@ -47,6 +148,8 @@ export interface JevResult {
   latencyMs: number;
   /** Whether it fell back to the fail-safe */
   failed: boolean;
+  /** Which provider was asked (on a failure too: the provider that was tried) */
+  provider: JevProviderId;
   /** Summary of the failure reason (never contains the API key) */
   error?: string;
 }
@@ -73,9 +176,13 @@ export function buildState(prompt: string, answerFormat: string = DEFAULT_ANSWER
 }
 
 /** The request body of §3-1 (the key order is §3-1's as well) */
-export function buildJevBody(prompt: string, answerFormat: string = DEFAULT_ANSWER_FORMAT): JevBody {
+export function buildJevBody(
+  prompt: string,
+  answerFormat: string = DEFAULT_ANSWER_FORMAT,
+  model: string = JEV_MODEL,
+): JevBody {
   return {
-    model: JEV_MODEL,
+    model,
     state: buildState(prompt, answerFormat),
     questions: {
       [QUESTION_NAME]: {
@@ -90,6 +197,9 @@ export function buildJevBody(prompt: string, answerFormat: string = DEFAULT_ANSW
 /**
  * Extract the choice from the response format of §6.
  * A missing or unknown value yields `undefined` (the caller falls back to the fail-safe, §3-3).
+ *
+ * Both providers answer with the same shape (`{"answers":{"effort":{"choice":"low",...}}}`), so this single
+ * parser serves both routes.
  */
 export function parseJevChoice(payload: unknown): EffortChoice | undefined {
   if (typeof payload !== "object" || payload === null) return undefined;
@@ -111,16 +221,33 @@ function errorSummary(error: unknown): string {
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+/** Build the request headers for one provider (the key value is never logged) */
+function buildHeaders(provider: JevProvider, apiKey: string): Record<string, string> {
+  return {
+    Authorization: `Bearer ${apiKey}`,
+    "Content-Type": "application/json",
+    // §6: the proxy's UA is required (Cloudflare blocks default UAs such as python-urllib).
+    // The native TypeSafe endpoint does not need one, so none is sent there.
+    ...(provider.userAgent ? { "User-Agent": provider.userAgent } : {}),
+  };
+}
+
 /**
  * Ask jev for one decision (timeout 3s, 1 retry, fail-safe high).
  *
  * @param prompt  The user's prompt (embedded into the state, truncated at 6000 characters)
  * @param signal  The caller's abort signal (used to cancel when the session ends)
- * @returns       choice / attempts / latencyMs / failed (never throws)
+ * @param env     Environment to read (`JEV_ROUTER_PROVIDER` + the provider's key variable); defaults to process.env
+ * @returns       choice / attempts / latencyMs / failed / provider (never throws)
  */
-export async function askJev(prompt: string, signal?: AbortSignal): Promise<JevResult> {
+export async function askJev(
+  prompt: string,
+  signal?: AbortSignal,
+  env: JevEnvLike = process.env,
+): Promise<JevResult> {
   const startedAt = Date.now();
-  const apiKey = process.env[JEV_API_KEY_ENV];
+  const { provider } = resolveJevProvider(env);
+  const apiKey = env[provider.apiKeyEnv];
   let attempts = 0;
   let lastError = "unknown error";
   let lastStatus: number | undefined;
@@ -131,7 +258,8 @@ export async function askJev(prompt: string, signal?: AbortSignal): Promise<JevR
       attempts: 0,
       latencyMs: Date.now() - startedAt,
       failed: true,
-      error: `${JEV_API_KEY_ENV} is not set`,
+      provider: provider.id,
+      error: `${provider.apiKeyEnv} is not set (provider: ${provider.id})`,
     };
   }
 
@@ -145,16 +273,10 @@ export async function askJev(prompt: string, signal?: AbortSignal): Promise<JevR
       // §3-2: each attempt gets a 3 second timeout (combined with the caller's signal)
       const timeoutSignal = AbortSignal.timeout(JEV_TIMEOUT_MS);
       const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-      const response = await fetch(JEV_ENDPOINT, {
+      const response = await fetch(provider.endpoint, {
         method: "POST",
-        headers: {
-          // The value itself is never logged
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-          // §6: the UA is required (Cloudflare blocks default UAs such as python-urllib)
-          "User-Agent": JEV_USER_AGENT,
-        },
-        body: JSON.stringify(buildJevBody(prompt)),
+        headers: buildHeaders(provider, apiKey),
+        body: JSON.stringify(buildJevBody(prompt, DEFAULT_ANSWER_FORMAT, provider.model)),
         signal: requestSignal,
       });
       lastStatus = response.status;
@@ -162,7 +284,13 @@ export async function askJev(prompt: string, signal?: AbortSignal): Promise<JevR
       const payload: unknown = await response.json();
       const choice = parseJevChoice(payload);
       if (!choice) throw new Error("jev response did not contain a valid choice");
-      return { choice, attempts, latencyMs: Date.now() - startedAt, failed: false };
+      return {
+        choice,
+        attempts,
+        latencyMs: Date.now() - startedAt,
+        failed: false,
+        provider: provider.id,
+      };
     } catch (error) {
       lastError = errorSummary(error);
       // Wait a little before retrying (there is only one retry)
@@ -175,6 +303,7 @@ export async function askJev(prompt: string, signal?: AbortSignal): Promise<JevR
     attempts,
     latencyMs: Date.now() - startedAt,
     failed: true,
+    provider: provider.id,
     error: lastStatus === undefined ? lastError : `${lastError} (last status ${lastStatus})`,
   };
 }

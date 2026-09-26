@@ -2,10 +2,12 @@
 
 **Jev decision-based thinking-level routing** for Pi Agent.
 
-> **Plan requirement:** this extension currently works on the **Command Code GOAT plan** only. Jev is accessed through
-> Command Code as well, so users on the GOAT plan incur no additional cost for the routing decisions.
+> **Requirements:** the routing decision itself needs a **Jev API key** — TypeSafe's own API by default
+> (`TYPESAFE_API_KEY`, billed per input token, output free) or the Command Code proxy (`COMMANDCODE_API_KEY`, whose
+> usage counts against the GOAT plan's token count). Everything else is provider-independent: the routed model can
+> be any model registered in pi. See "Jev provider" below.
 
-> **⚠️ Experimental software.** This extension is in an experimental stage and is provided "as is", without warranty of any kind. **The author assumes no responsibility whatsoever** for any damage or loss arising from its use, including billing on your model provider or on Command Code.
+> **⚠️ Experimental software.** This extension is in an experimental stage and is provided "as is", without warranty of any kind. **The author assumes no responsibility whatsoever** for any damage or loss arising from its use, including billing on your model provider, on TypeSafe, or on Command Code.
 
 ## Install
 
@@ -112,7 +114,7 @@ on the DeepSeek direct route (see the note under "What the routing saves").
 
 | Item | Rate | Cost per decision |
 |---|---|---|
-| Jev (`typesafe/jev`) | input **$0.042/M**, **output free** | **~$0.00005** |
+| Jev (`jev-latest` on TypeSafe / `typesafe/jev` on Command Code — the same model behind both routes) | input **$0.042/M**, **output free** | **~$0.00005** |
 
 The state Jev reads is a fixed template plus at most 6,000 characters of the prompt (`STATE_PROMPT_MAX_CHARS`),
 so the cost per decision is essentially constant regardless of how long the prompt is.
@@ -160,19 +162,30 @@ latency for nothing. Check which level you actually run at before enabling it.
 
 ### API key (required)
 
+**Jev runs on TypeSafe's own API by default**, so the default requirement is a TypeSafe API key
+([dashboard](https://console.typesafe.ai/keys)):
+
+```sh
+export TYPESAFE_API_KEY="..."
+```
+
+If you route through Command Code instead (`JEV_ROUTER_PROVIDER=commandcode` — see "Jev provider"), set that key
+instead:
+
 ```sh
 export COMMANDCODE_API_KEY="..."
 ```
 
-This key is used for **both** the Jev decision and (on the Command Code route) the model request itself.
+On the Command Code route this key is used for **both** the Jev decision and the model request itself; on the
+TypeSafe route it is used only for the Jev decision.
 
 **This extension never stores your API key.** For security it keeps no credential file and writes no credential
 anywhere — the key is read from the environment at request time and used only in the `Authorization` header, and
 it is never logged, never written to the run log or the payload dump. **Always set it as an environment variable**
 in your shell profile (or via pi's own provider auth), not in a file inside this repository.
 
-**If the key is unset**, every routed prompt fails safe to `high` (quality side) and the extension reports the
-failure in its notification.
+**If the key of the selected provider is unset**, every routed prompt fails safe to `high` (quality side) and the
+extension reports the failure in its notification.
 
 ### Routed model (required)
 
@@ -193,32 +206,51 @@ The target model also needs pi-side settings that the extension cannot verify:
 | `compat.supportsReasoningEffort: true` on the model | same file | without it pi never sends `reasoning_effort`, so changing the level changes nothing |
 | The route accepts the effort values | the provider | on the Command Code route `none` is rejected with HTTP 400, so the lowest usable level is `low` |
 
-### Jev API endpoint
+### Jev provider (route to jev)
 
-| Item | Value |
+Both routes ask **the same question with the same wording** (`criteria.ts`) and answer with the same shape
+(`answers["effort"].choice`), so switching routes does not change the criteria or the parser. Only the endpoint,
+the model name and the key variable differ.
+
+| Item | `typesafe` (**default**) | `commandcode` |
+|---|---|---|
+| Endpoint | `https://api.typesafe.ai/v1/systemone` | `https://api.commandcode.ai/provider/v1/systemone` |
+| Model | `jev-latest` (= `jev-1.13.0`) | `typesafe/jev` (a provider-scoped name) |
+| Auth | `Authorization: Bearer $TYPESAFE_API_KEY` | `Authorization: Bearer $COMMANDCODE_API_KEY` (a `User-Agent` is required to pass Cloudflare) |
+| Billing | TypeSafe usage ($42/Btok input, output free) | your Command Code account (GOAT token count) |
+| Latency observed in real runs | 156–432 ms | 372–612 ms |
+| Response to the same state | `low` (p 0.72) | `low` (p 0.73) |
+
+Selection (`JEV_ROUTER_PROVIDER`):
+
+| Value | Behavior |
 |---|---|
-| Endpoint | `https://api.commandcode.ai/provider/v1/systemone` |
-| Model | `typesafe/jev` |
-| Request | one `choice` question (`none` / `low` / `high`) with fixed criteria and instructions |
-| Auth | `Authorization: Bearer $COMMANDCODE_API_KEY` (a `User-Agent` is required to pass Cloudflare) |
-| Timeout / retry | 3 s per attempt, 1 retry, then fail-safe `high` |
+| `typesafe` | TypeSafe's own API (the default; also used when the variable is unset or unrecognized — an unrecognized value adds a warning to the audit entry and the log) |
+| `commandcode` | The Command Code proxy (the original route, unchanged) |
+| `auto` | TypeSafe when `TYPESAFE_API_KEY` is set, otherwise Command Code |
 
-- Works with a regular Command Code API key; usage is billed to your account. With a Command Code GOAT
-  subscription, the usage counts against the subscription's token count.
-- The endpoint and the model are fixed in `jev.ts` (OpenRouter is deliberately not supported).
+- Request, timeout and fail-safe are identical on both routes: one `choice` question (`none` / `low` / `high`) with
+  fixed criteria, 3 s per attempt, 1 retry, then fail-safe `high`.
+- **The model names are not interchangeable**: `typesafe/jev` on the native API returns `400 Unknown model`, and
+  `jev-latest` is not a model id registered by the Command Code provider (the proxy rewrites it to `typesafe/jev`).
+  The extension therefore sends the correct name per route.
+- The endpoints and models are defined in `JEV_PROVIDERS` in `jev.ts` (OpenRouter is deliberately not supported).
+- The route actually used is recorded per decision (`jevProvider` in the audit entry and in the run log), and
+  `/jev-router` prints the resolved route, endpoint, model and whether the key is present (never its value).
 
 ## Privacy & data flow
 
-This extension sends part of your prompt to Command Code's `provider/v1/systemone` endpoint so that Jev can judge it.
+This extension sends part of your prompt to your selected Jev provider so that Jev can judge it.
 
 | Direction | Content |
 |---|---|
 | **Sent to Jev** | A fixed state template plus **the first 6,000 characters of your prompt** |
 | **Not sent to Jev** | The system prompt, the conversation history, tool calls and results, file contents, images/attachments, the cwd, the session id, and your API key |
-| **Destination** | `api.commandcode.ai` |
-| **Written locally** | `~/.pi/agent/jev-router/runs.jsonl`: timestamp, prompt **length** (never the body), session id, session file path, cwd, model, decision, latency, and the post-request cache figures. Disable with `JEV_ROUTER_LOG=off` |
+| **Destination** | `api.typesafe.ai` by default; `api.commandcode.ai` when `JEV_ROUTER_PROVIDER=commandcode` |
+| **Written locally** | `~/.pi/agent/jev-router/runs.jsonl`: timestamp, prompt **length** (never the body), session id, session file path, cwd, model, jev provider, decision, latency, and the post-request cache figures. Disable with `JEV_ROUTER_LOG=off` |
 
-Do not use this extension on sessions whose content you are not permitted to send to Command Code.
+Do not use this extension on sessions whose content you are not permitted to send to the selected provider
+(TypeSafe's own API by default, Command Code if you select that route).
 
 ## Experimental — no warranty
 
@@ -252,13 +284,15 @@ ctx.model matches JEV_ROUTER_MODELS
 
 | Command | Behavior | Gate |
 |---|---|---|
-| `/jev-router` | show the current model, whether it is routed and why not, the allowlist, the last decision, `NONE_POLICY`, and the choice -> level mapping | — |
+| `/jev-router` | show the current model, whether it is routed and why not, the allowlist, the Jev provider (route, endpoint, model, whether the key is set), the last decision, `NONE_POLICY`, and the choice -> level mapping | — |
 
 ## Environment variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `COMMANDCODE_API_KEY` | — | **required**. Used for the Jev decision and (on the Command Code route) the model request |
+| `JEV_ROUTER_PROVIDER` | `typesafe` | Jev route: `typesafe` (TypeSafe's own API) / `commandcode` (Command Code proxy) / `auto` (TypeSafe when `TYPESAFE_API_KEY` is set, otherwise Command Code). An unrecognized value falls back to `typesafe` and is recorded as a warning |
+| `TYPESAFE_API_KEY` | — | **required by default**: the Jev decision on TypeSafe's own API |
+| `COMMANDCODE_API_KEY` | — | required only for `JEV_ROUTER_PROVIDER=commandcode`: the Jev decision and, on that route, the model request |
 | `JEV_ROUTER_MODELS` | *(unset)* | **required to route anything**. Comma-separated `provider/id` allowlist. Unset or empty = nothing runs |
 | `JEV_ROUTER_NOTIFY` | `low` | Level-change messages: `low` (every low decision) / `downgrade` / `change` / `off` |
 | `JEV_ROUTER_LOG` | `~/.pi/agent/jev-router/runs.jsonl` | Run log destination. `off` or empty disables it |
@@ -285,6 +319,8 @@ What pi then sends depends on the routed model. On the Command Code route only `
   depends on the model's `models.json` settings (see "Requirements").
 - Any failure (no key, timeout, 5xx, unparsable answer) applies `high`.
 - The decision is also appended to the session as an audit entry (`appendEntry`), which **never enters the model context**.
+- The route that answered is recorded with the decision (`jevProvider` / `jevProviderSource` in the audit entry and
+  in the run log), so a log can be split by route after the fact. The routing criterion itself is route-independent.
 - The cache measurement is **strictly read-only**: it reads the `usage` pi reports, returns `undefined`, and
   writes neither session entries nor messages.
 
