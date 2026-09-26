@@ -2,6 +2,9 @@
 
 **Jev decision-based thinking-level routing** for Pi Agent.
 
+> **Plan requirement:** currently only the **Command Code GOAT plan** is supported. Jev is accessed through
+> Command Code as well, so users on the GOAT plan incur no additional cost for the routing decisions.
+
 > **⚠️ Experimental software.** This extension is in an experimental stage and is provided "as is", without warranty of any kind. **The author assumes no responsibility whatsoever** for any damage or loss arising from its use, including billing on your model provider or on Command Code.
 
 ## Install
@@ -180,7 +183,8 @@ The target model also needs pi-side settings that the extension cannot verify:
 | Auth | `Authorization: Bearer $COMMANDCODE_API_KEY` (a `User-Agent` is required to pass Cloudflare) |
 | Timeout / retry | 3 s per attempt, 1 retry, then fail-safe `high` |
 
-- Works with a regular Command Code API key; usage is billed to your account.
+- Works with a regular Command Code API key; usage is billed to your account. With a Command Code GOAT
+  subscription, the usage counts against the subscription's token count.
 - The endpoint and the model are fixed in `jev.ts` (OpenRouter is deliberately not supported).
 
 ## Privacy & data flow
@@ -189,11 +193,10 @@ This extension sends part of your prompt to Command Code's `provider/v1/systemon
 
 | Direction | Content |
 |---|---|
-| **Sent to Jev** | A fixed state template plus **the first 6,000 characters of your prompt**. Nothing else |
+| **Sent to Jev** | A fixed state template plus **the first 6,000 characters of your prompt** |
 | **Not sent to Jev** | The system prompt, the conversation history, tool calls and results, file contents, images/attachments, the cwd, the session id, and your API key |
-| **Destination** | `api.commandcode.ai` only (no other network destination, no telemetry) |
+| **Destination** | `api.commandcode.ai` |
 | **Written locally** | `~/.pi/agent/jev-router/runs.jsonl`: timestamp, prompt **length** (never the body), session id, session file path, cwd, model, decision, latency, and the post-request cache figures. Disable with `JEV_ROUTER_LOG=off` |
-| **Diagnostics only** | `JEV_ROUTER_DUMP` writes the outgoing payload to a file; it includes the prompt fragment. Do not set it in normal use |
 
 Do not use this extension on sessions whose content you are not permitted to send to Command Code.
 
@@ -229,7 +232,7 @@ ctx.model matches JEV_ROUTER_MODELS
 
 | Command | Behavior | Gate |
 |---|---|---|
-| `/jev-router` | show the current model, whether it is routed and why not, the allowlist, the last decision, `NONE_POLICY`, the diagnostic switches, and the choice -> level mapping | — |
+| `/jev-router` | show the current model, whether it is routed and why not, the allowlist, the last decision, `NONE_POLICY`, and the choice -> level mapping | — |
 
 ## Environment variables
 
@@ -239,14 +242,6 @@ ctx.model matches JEV_ROUTER_MODELS
 | `JEV_ROUTER_MODELS` | *(unset)* | **required to route anything**. Comma-separated `provider/id` allowlist. Unset or empty = nothing runs |
 | `JEV_ROUTER_NOTIFY` | `low` | Level-change messages: `low` (every low decision) / `downgrade` / `change` / `off` |
 | `JEV_ROUTER_LOG` | `~/.pi/agent/jev-router/runs.jsonl` | Run log destination. `off` or empty disables it |
-| `JEV_ROUTER_FORCE` | — | **verification only**: force `off` / `low` / `high` without calling jev |
-| `JEV_ROUTER_DUMP` | — | **verification only**: write the outgoing payload to this path as JSON |
-| `JEV_ROUTER_JITI` | — | For tests: explicit path to jiti (the TS loader) |
-| `JEV_ROUTER_LIVE_JEV` | — | For tests: `1` makes the offline harness actually ask jev once (billed) |
-
-> `JEV_ROUTER_FORCE` bypasses the decision entirely, so never use it to check production behavior.
-> `JEV_ROUTER_DUMP` writes the outgoing payload, which includes part of your prompt. The run log never records the
-> prompt body (only its length), and the API key is never written anywhere.
 
 ## How it works
 
