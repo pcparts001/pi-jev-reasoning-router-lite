@@ -93,8 +93,10 @@ changed; nothing else about the session is touched.
 - **The judgement is per prompt** — a trivial prompt runs cheap, a design question runs deep, with no manual switching.
 - **It fails toward quality** — no key, timeout, 5xx or an invalid answer all fall back to `high`, so the routing
   can never quietly drop reasoning from a hard task.
-- **It is read-only for the session** — the extension never rewrites the conversation, the system prompt, the
-  outgoing payload, or the transcript; it sets a level and appends an audit entry.
+- **It is read-only for the session by default** — the extension never rewrites the conversation, the
+  system prompt, the outgoing payload, or the transcript; it sets a level and appends an audit entry.
+  The one opt-in exception is `JEV_ROUTER_LOOP=1`, which rewrites `reasoning_effort` in the outgoing
+  payload on requests inside a tool loop (local heuristics only; see the in-loop section below).
 
 #### In-loop effort routing (optional, opt-in)
 
