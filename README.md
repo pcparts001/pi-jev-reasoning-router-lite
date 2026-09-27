@@ -105,10 +105,24 @@ turn start). This uses local heuristics only — no jev calls, no network, no ad
 
 | Rule | Condition | Level |
 |---|---|---|
-| tool-error | the latest tool result looks like an error | high |
+| tool-error | the latest tool result is an error (pi's own `isError`; the text heuristic on the wire content is only a fallback when that flag is unavailable) | high |
 | streak ≥ N | 4+ (configurable) consecutive successful tool results | low |
-| early-loop | request ≤ 2 and a fresh tool result arrived | high |
+| early-loop | request ≤ 2 within the turn and a fresh tool result arrived | high |
 | ambiguous | none of the above | keeps the turn-start level |
+
+The turn's **first** request is never rewritten: it keeps the level jev decided, and the local rules
+only apply from the second request of the turn onwards.
+
+The in-loop gate is the **same `routeDecision` the turn start uses**, so `JEV_ROUTER_MODELS` is matched
+against pi's `provider/id` identity in exactly one place (`command-code-goat/deepseek/deepseek-v4.1-flash`).
+The provider-side name that appears in the outgoing payload (`deepseek/deepseek-v4.1-flash`) is a different
+string, so it is never used for the gate — it is only recorded as `wireModel` in the run log. A model change
+in the middle of a turn, a non-allowlisted model, or an unavailable current model all stop the in-loop
+routing instead of rewriting an unverified request.
+
+Each applied rule appends one `event: "loop"` record to the run log (`n`, `level`, `rule`, the routed
+`model` / `provider` / `id`, `wireModel`, and `turnChoice` / `turnRequestedLevel` for correlation with the
+turn's `decision` record), so the wire effort can be reconstructed after the fact.
 
 **Cache safety** (measured 2026-09-27): changing `reasoning_effort` between requests has **no impact
 on the DeepSeek prefix cache** (command-code-goat / deepseek-v4.1-flash: 87-95% hit maintained across
@@ -277,7 +291,7 @@ This extension sends part of your prompt to your selected Jev provider so that J
 | **Sent to Jev** | A fixed state template plus **the first 6,000 characters of your prompt** |
 | **Not sent to Jev** | The system prompt, the conversation history, tool calls and results, file contents, images/attachments, the cwd, the session id, and your API key |
 | **Destination** | `api.typesafe.ai` by default; `api.commandcode.ai` when `JEV_ROUTER_PROVIDER=commandcode` |
-| **Written locally** | `~/.pi/agent/jev-router/runs.jsonl`: timestamp, prompt **length** (never the body), session id, session file path, cwd, model, jev provider, decision, latency, and the post-request cache figures. Disable with `JEV_ROUTER_LOG=off` |
+| **Written locally** | `~/.pi/agent/jev-router/runs.jsonl`: timestamp, prompt **length** (never the body), session id, session file path, cwd, model, jev provider, decision, latency, and the post-request cache figures. `event` is `decision` / `skip` / `cache`, plus `loop` for each in-loop override (`JEV_ROUTER_LOOP=1`). Disable with `JEV_ROUTER_LOG=off` |
 
 Do not use this extension on sessions whose content you are not permitted to send to the selected provider
 (TypeSafe's own API by default, Command Code if you select that route).

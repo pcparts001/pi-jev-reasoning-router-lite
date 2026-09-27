@@ -187,6 +187,43 @@ export function routeDecision(
 }
 
 // ============================================================================
+// In-loop gate (JEV_ROUTER_LOOP) — the SAME allowlist gate as the turn start
+// ============================================================================
+
+/** Why in-loop routing did not run (recorded for diagnostics) */
+export type LoopGateBlockReason = "loop-disabled" | "no-turn" | "model-changed" | RouteSkipReason;
+
+export type LoopGateDecision =
+  | { allowed: true; model: string }
+  | { allowed: false; reason: LoopGateBlockReason };
+
+/**
+ * Whether in-loop routing may rewrite this request's `reasoning_effort` (a pure function).
+ *
+ * It calls **the same `routeDecision`** the turn start uses, so `JEV_ROUTER_MODELS` has a single
+ * source of truth and is always matched against pi's `provider/id` identity — never against the
+ * provider-side wire model name (`wireModel`), which is a different string (e.g. pi's
+ * `command-code-goat/deepseek/deepseek-v4.1-flash` vs the wire's `deepseek/deepseek-v4.1-flash`)
+ * and cannot be mapped back reliably.
+ *
+ * `turnModel` is the routed identity captured when the turn was routed, so a model change in the
+ * middle of a turn stops the routing instead of rewriting the effort of an unverified model.
+ * Requiring it also means "this turn was routed", i.e. the model passed the gate at the turn start.
+ */
+export function loopGate(
+  input: { enabled: boolean; model: RoutedModelLike | undefined; turnModel: string | undefined },
+  config?: AllowedModelsConfig,
+): LoopGateDecision {
+  if (!input.enabled) return { allowed: false, reason: "loop-disabled" };
+  if (!input.turnModel) return { allowed: false, reason: "no-turn" };
+  // The allowlist is resolved only when the loop actually runs (the default config does no extra work)
+  const route = routeDecision(input.model, config ?? resolveAllowedModels());
+  if (!route.routed) return { allowed: false, reason: route.reason };
+  if (route.model !== input.turnModel) return { allowed: false, reason: "model-changed" };
+  return { allowed: true, model: route.model };
+}
+
+// ============================================================================
 // Level-change notification (shown as one dim line in pi's UI)
 // ============================================================================
 
@@ -554,6 +591,12 @@ export interface LoopLogRecord extends LogContext {
   level: "low" | "high";
   /** Which rule fired ("tool-error", "tool-error(text)", "streak>=N", "early-loop") */
   rule: string;
+  /**
+   * The provider-side model name as it appears in the outgoing payload.
+   * Kept for diagnosis only: it is NOT the identity the allowlist matches (see `loopGate`),
+   * and it must never be used to join a `loop` record with a `decision` / `cache` record.
+   */
+  wireModel?: string;
   /** The turn-start jev choice, for correlation with the decision record */
   turnChoice?: string;
   /** The turn-start REQUESTED level (before pi clamps) */

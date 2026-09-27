@@ -58,6 +58,7 @@ import {
   formatCacheNotice,
   formatLevelNotice,
   isLevelChanged,
+  loopGate,
   readCacheUsage,
   readPayloadModel,
   shouldCaptureFirstRequest,
@@ -79,6 +80,7 @@ import {
   type LogContext,
   type PendingTurn,
   type PiThinkingLevel,
+  type RoutedModelLike,
 } from "./router.ts";
 import type { EffortChoice } from "./criteria.ts";
 import {
@@ -349,14 +351,18 @@ export default function jevReasoningRouter(pi: ExtensionAPI) {
     if (payloadModel) lastRequestModel = payloadModel;
 
     // --- in-loop routing (the only payload-rewriting path, opt-in via JEV_ROUTER_LOOP=1) ---
-    // Fixes applied (code review 2026-09-27):
-    //   ① buildLoopLogRecord removed — appendLogRecord is called with a plain object
-    //   ② model gate: only routes when the payload model matches the allowlist
+    // The gate is the SAME `routeDecision` the turn start uses (`loopGate`), so the allowlist is
+    // matched against pi's `provider/id` identity in one place, and `pendingTurn.log.model` is the
+    // routed identity captured at the turn start (a model change mid-turn stops the routing).
     //   ③ requestIndex counts from the LAST user message (per-turn, not session-wide)
-    //   ④ consecutiveOk resets at user messages; the FIRST request of a turn keeps the
-    //      turn-start jev decision (local rules only fire from the second request on)
-    //   ⑨ loop log records carry sessionId / cwd / model
-    if (loopEnabled() && pendingTurn && payloadModel && pendingTurn.model && payloadModel === pendingTurn.model) {
+    //   ④ the FIRST request of a turn keeps the turn-start jev decision (local rules fire from the 2nd on)
+    const ctxModel = ctx?.model as RoutedModelLike | undefined;
+    const loop = loopGate({
+      enabled: loopEnabled(),
+      model: ctxModel,
+      turnModel: pendingTurn?.log.model,
+    });
+    if (loop.allowed) {
       const payload = event.payload as Record<string, unknown> | null;
       if (payload && typeof payload === "object" && Array.isArray(payload.messages)) {
         const currentTurnRequestIndex = countRequestsSinceLastUser(payload.messages);
@@ -370,7 +376,7 @@ export default function jevReasoningRouter(pi: ExtensionAPI) {
           const decision = loopDecision(facts, streak);
           if (decision) {
             const next = { ...payload, reasoning_effort: decision.level };
-            // Properly typed loop record (correlation with the turn-start decision)
+            // Properly typed loop record (identical model identity to decision / cache records)
             const loopRecord: LoopLogRecord = {
               v: 1,
               event: "loop",
@@ -379,7 +385,11 @@ export default function jevReasoningRouter(pi: ExtensionAPI) {
               n: currentTurnRequestIndex,
               level: decision.level,
               rule: decision.rule,
-              ...(payloadModel ? { model: payloadModel } : {}),
+              model: loop.model, // routed `provider/id` (same identity as decision / cache records)
+              ...(ctxModel?.provider ? { provider: ctxModel.provider } : {}),
+              ...(ctxModel?.id ? { id: ctxModel.id } : {}),
+              // The wire name is a different string and is recorded for diagnosis only
+              ...(payloadModel ? { wireModel: payloadModel } : {}),
               ...(lastDecision ? {
                 turnChoice: lastDecision.choice,
                 turnRequestedLevel: lastDecision.level,
