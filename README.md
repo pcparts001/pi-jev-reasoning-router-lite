@@ -42,8 +42,8 @@ git clone https://github.com/pcparts001/pi-jev-reasoning-router-lite.git \
 ```
 
 `package.json` declares the entry point via `pi.extensions` (and pi would also find `index.ts` at the repository
-root), so no file renaming is required. Placed this way the extension is only about **250 KB**, because nothing
-runs `npm install`.
+root), so no file renaming is required. Either way only the repository files are installed: the package has no
+dependencies, so there is nothing for `npm install` to add (a manual clone just skips the step).
 
 **Uninstall** — a manual clone has no `settings.json` entry, so `pi remove` reports
 `No matching package found` and changes nothing. Delete the directory instead:
