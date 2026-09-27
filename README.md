@@ -30,9 +30,9 @@ pi remove https://github.com/pcparts001/pi-jev-reasoning-router-lite
 This removes the entry from `settings.json` **and** deletes the cloned directory
 (`~/.pi/agent/git/github.com/pcparts001/pi-jev-reasoning-router-lite`), so the extension is gone completely.
 
-Note that `pi install` resolves `package.json`, so the peer dependency (`@earendil-works/pi-coding-agent`) is
-installed into the clone: expect roughly **440 MB** of `node_modules`. The extension has no runtime dependencies
-of its own, so Option 2 avoids that entirely.
+The package declares **no dependencies and no peer dependencies** — the extension imports only types from
+`@earendil-works/pi-coding-agent`, and pi resolves its own API at runtime — so `pi install` downloads just the
+repository files, with no `node_modules` in the clone.
 
 ### Option 2: manual placement
 
