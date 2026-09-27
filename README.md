@@ -318,6 +318,8 @@ ctx.model matches JEV_ROUTER_MODELS
 
 | Variable | Default | Description |
 |---|---|---|
+| `JEV_ROUTER_LOOP` | *(unset = off)* | `1`/`true`/`on` enables in-loop effort routing (local rules only, no jev) |
+| `JEV_ROUTER_LOOP_STREAK` | `4` | streak threshold that triggers the downgrade to low (2-20) |
 | `JEV_ROUTER_PROVIDER` | `typesafe` | Jev route: `typesafe` (TypeSafe's own API) / `commandcode` (Command Code proxy) / `auto` (TypeSafe when `TYPESAFE_API_KEY` is set, otherwise Command Code). An unrecognized value falls back to `typesafe` and is recorded as a warning |
 | `TYPESAFE_API_KEY` | — | **required by default**: the Jev decision on TypeSafe's own API |
 | `COMMANDCODE_API_KEY` | — | required only for `JEV_ROUTER_PROVIDER=commandcode`: the Jev decision and, on that route, the model request |

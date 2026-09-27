@@ -143,6 +143,19 @@ function observedContext(base: LogContext): LogContext {
   return { ...base, ts: new Date().toISOString() };
 }
 
+/** Count assistant messages after the LAST user message (per-turn request index) */
+function countRequestsSinceLastUser(messages: readonly unknown[]): number {
+  let count = 0;
+  let seenLastUser = false;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const m = messages[i] as { role?: string } | null;
+    if (!m || typeof m !== "object") continue;
+    if (m.role === "user") { seenLastUser = true; break; }
+    if (m.role === "assistant") count += 1;
+  }
+  return seenLastUser ? count : count; // even without a user marker, count is the tail's assistants
+}
+
 /** Minimal shape of the messages observed in `message_end` / `agent_end` (usage is only read) */
 interface MessageLike {
   role?: string;
@@ -153,6 +166,12 @@ interface MessageLike {
 function asMessageList(messages: unknown): MessageLike[] {
   return Array.isArray(messages) ? (messages as MessageLike[]) : [];
 }
+
+// Session context helpers for the in-loop handler (before_provider_request has no ctx)
+// These are set once at session_start / before_agent_start time
+let _sessionContext: { sessionId?: string; cwd?: string } = {};
+function ctx_sessionId(): string | undefined { return _sessionContext.sessionId; }
+function ctx_cwd(): string | undefined { return _sessionContext.cwd; }
 
 export default function jevReasoningRouter(pi: ExtensionAPI) {
   // §4-1: only register handlers here (start no socket / timer / fetch)
@@ -199,6 +218,10 @@ export default function jevReasoningRouter(pi: ExtensionAPI) {
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
+    // Capture session context for the in-loop handler (which receives no ctx)
+    _sessionContext = { sessionId: undefined, cwd: ctx?.cwd };
+    try { _sessionContext.sessionId = ctx?.sessionManager?.getSessionId?.(); } catch { /* tests */ }
+
     // Model gate: for a model that does not match the allowlist (`JEV_ROUTER_MODELS`)
     // jev is not called and the thinking level is not changed (so neither billing nor latency happens).
     // When the variable is unset the allowlist is empty, so every model stops here.
@@ -323,26 +346,43 @@ export default function jevReasoningRouter(pi: ExtensionAPI) {
     lastRequestAt = now;
     if (payloadModel) lastRequestModel = payloadModel;
 
-    // --- in-loop routing (the only payload-rewriting path) ---
-    if (loopEnabled()) {
+    // --- in-loop routing (the only payload-rewriting path, opt-in via JEV_ROUTER_LOOP=1) ---
+    // Fixes applied (code review 2026-09-27):
+    //   ① buildLoopLogRecord removed — appendLogRecord is called with a plain object
+    //   ② model gate: only routes when the payload model matches the allowlist
+    //   ③ requestIndex counts from the LAST user message (per-turn, not session-wide)
+    //   ④ consecutiveOk resets at user messages; the FIRST request of a turn keeps the
+    //      turn-start jev decision (local rules only fire from the second request on)
+    //   ⑨ loop log records carry sessionId / cwd / model
+    if (loopEnabled() && pendingTurn && (!payloadModel || !pendingTurn.model || payloadModel === pendingTurn.model)) {
       const payload = event.payload as Record<string, unknown> | null;
       if (payload && typeof payload === "object" && Array.isArray(payload.messages)) {
-        loopRequestCount += 1;
-        const facts = extractLoopFacts(payload.messages);
-        const streak = loopStreakThreshold();
-        const decision = loopDecision(facts, streak);
-        if (decision) {
-          const next = { ...payload, reasoning_effort: decision.level };
-          appendLogRecord(
-            buildLoopLogRecord({
+        const currentTurnRequestIndex = countRequestsSinceLastUser(payload.messages);
+        const firstOfTurn = pendingTurn.requestAt === now; // this IS the first request of the turn
+        if (!firstOfTurn) {
+          const facts = extractLoopFacts(payload.messages);
+          facts.requestIndex = currentTurnRequestIndex; // per-turn index (③)
+          const streak = loopStreakThreshold();
+          const decision = loopDecision(facts, streak);
+          if (decision) {
+            const next = { ...payload, reasoning_effort: decision.level };
+            // ⑨ proper log context
+            const loopCtx: Record<string, unknown> = {
+              v: 1,
+              event: "loop",
               ts: new Date().toISOString(),
-              cwd: undefined,
-              n: loopRequestCount,
+              n: currentTurnRequestIndex,
               level: decision.level,
               rule: decision.rule,
-            }),
-          );
-          return next;
+              model: payloadModel,
+            };
+            try {
+              loopCtx.sessionId = ctx_sessionId();
+              loopCtx.cwd = ctx_cwd();
+            } catch { /* tests may lack session info */ }
+            appendLogRecord(loopCtx as never);
+            return next;
+          }
         }
       }
     }

@@ -30,9 +30,28 @@ export interface LoopFacts {
 
 export type LoopDecision = { level: "low" | "high"; rule: string } | undefined;
 
-/** Detect error-looking tool results (the wire shape lacks isError on some routes) */
+/**
+ * Detect error-looking tool results. Deliberately strict to avoid false positives:
+ * - requires an error INDICATOR (^, exit code, "Error:" prefix) not just the word "error"
+ *   (a file named error.ts or "0 errors" in a grep result must NOT trigger this)
+ * - checked on the first 400 chars only
+ */
 function looksLikeError(text: string): boolean {
-  return /error|failed|not found|exception|traceback|permission denied|enoent|enoent|cannot find|no such file|syntaxerror|typeerror|referenceerror/i.test(text.slice(0, 400));
+  const head = text.slice(0, 400);
+  // explicit error prefixes / exits
+  if (/^error:/i.test(head.trim())) return true;
+  if (/exit code [1-9]/i.test(head)) return true;
+  if (/\b(traceback|stack trace)\b/i.test(head) && /\berror\b|\bexception\b/i.test(head)) return true;
+  // common hard failures (with word boundaries to avoid filename matches)
+  if (/\b(enoent|eacces|eperm)\b/i.test(head)) return true;
+  if (/\bno such file or directory\b/i.test(head)) return true;
+  if (/\b(permission denied)\b/i.test(head)) return true;
+  if (/\bcommand not found\b/i.test(head)) return true;
+  // programming errors (exact word, not filenames)
+  if (/\b(syntaxerror|typeerror|referenceerror|rangeerror)\b/i.test(head)) return true;
+  // "N errors" or "N failed" at a line start (test runners)
+  if (/^\s*\d+ (error|failure|failed)/im.test(head)) return true;
+  return false;
 }
 
 /** Extract loop facts from provider-shaped messages (role: user/assistant/tool) */
@@ -56,6 +75,7 @@ export function extractLoopFacts(messages: readonly unknown[]): LoopFacts {
       consecutiveOk = isErr ? 0 : consecutiveOk + 1;
     } else if (m.role === "user") {
       hasRecentToolResult = false;
+      consecutiveOk = 0; // a new user prompt resets the streak (per-turn semantics)
     }
   }
   return { requestIndex, lastToolError, consecutiveOk, hasRecentToolResult, lastResultChars };

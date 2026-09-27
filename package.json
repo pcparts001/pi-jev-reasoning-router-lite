@@ -23,6 +23,7 @@
     "criteria.ts",
     "router.ts",
     "logger.ts",
+    "loop-rules.ts",
     "README.md"
   ],
   "pi": {
