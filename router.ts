@@ -316,7 +316,7 @@ export interface SkipLogRecord extends LogContext {
   allowed: string[];
 }
 
-export type LogRecord = DecisionLogRecord | SkipLogRecord | CacheFirstRequestLogRecord | CacheTurnLogRecord;
+export type LogRecord = DecisionLogRecord | SkipLogRecord | CacheFirstRequestLogRecord | CacheTurnLogRecord | LoopLogRecord;
 
 export function buildDecisionLogRecord(input: LogContext & Omit<DecisionLogRecord, keyof LogContext | "v" | "event">): DecisionLogRecord {
   return { v: 1, event: "decision", ...input };
@@ -542,6 +542,22 @@ export interface CacheTurnLogRecord extends CacheLogCommon {
    * When tool calls cause several requests in one turn, neither the summed `usage` nor the first request works.
    */
   lastUsage?: CacheUsage;
+}
+
+/** An in-loop routing decision (per-request effort override via local rules) */
+export interface LoopLogRecord extends LogContext {
+  v: 1;
+  event: "loop";
+  /** Request index within the current turn (1-based, counted from the last user message) */
+  n: number;
+  /** The level this rule decided ("low" | "high") */
+  level: "low" | "high";
+  /** Which rule fired ("tool-error", "tool-error(text)", "streak>=N", "early-loop") */
+  rule: string;
+  /** The turn-start jev choice, for correlation with the decision record */
+  turnChoice?: string;
+  /** The turn-start REQUESTED level (before pi clamps) */
+  turnRequestedLevel?: string;
 }
 
 export function buildCacheFirstRequestLogRecord(

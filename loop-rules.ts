@@ -22,6 +22,9 @@ export const LOOP_STREAK_ENV = "JEV_ROUTER_LOOP_STREAK";
 
 export interface LoopFacts {
   requestIndex: number;
+  /** pi's own error flag from the last tool_result (isError). Undefined when not yet observed. */
+  lastToolIsError?: boolean;
+  /** fallback: text heuristic on the wire content (used only when lastToolIsError is undefined) */
   lastToolError: boolean;
   consecutiveOk: number;
   hasRecentToolResult: boolean;
@@ -94,7 +97,10 @@ export function extractLoopFacts(messages: readonly unknown[]): LoopFacts {
  * `streakThreshold` defaults to 4 (override with JEV_ROUTER_LOOP_STREAK).
  */
 export function loopDecision(facts: LoopFacts, streakThreshold = 4): LoopDecision {
-  if (facts.lastToolError) return { level: "high", rule: "tool-error" };
+  // primary: pi's own isError flag (exact, covers all tools)
+  if (facts.lastToolIsError === true) return { level: "high", rule: "tool-error" };
+  // fallback: text heuristic on the wire content (bash exit codes, etc.)
+  if (facts.lastToolIsError === undefined && facts.lastToolError) return { level: "high", rule: "tool-error(text)" };
   if (facts.consecutiveOk >= streakThreshold) return { level: "low", rule: `streak>=${streakThreshold}` };
   if (facts.requestIndex <= 2 && facts.hasRecentToolResult && facts.lastResultChars > 0) {
     return { level: "high", rule: "early-loop" };

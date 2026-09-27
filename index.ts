@@ -45,6 +45,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { askJev, FAIL_SAFE_CHOICE, JEV_PROVIDER_ENV, resolveJevProvider } from "./jev.ts";
 import type { JevProviderId, JevProviderSource } from "./jev.ts";
 import { appendLogRecord, resolveLogPath } from "./logger.ts";
+import type { LoopLogRecord } from "./router.ts";
 import {
   ALLOWED_MODELS_ENV,
   buildCacheFirstRequestLogRecord,
@@ -183,6 +184,14 @@ export default function jevReasoningRouter(pi: ExtensionAPI) {
   let compactionObserved: CompactionObservation | undefined;
   /** In-loop routing: request counter within the session (reset at session_start) */
   let turnFirstRequestPending = false;
+  /** Last tool_result's isError flag from pi (read-only; the primary error signal) */
+  let lastToolIsError: boolean | undefined;
+
+  // Read-only: capture pi's own error flag from tool results (the primary
+  // error signal for in-loop routing — covers ALL tools, not just bash).
+  pi.on("tool_result", (event) => {
+    lastToolIsError = (event as { isError?: unknown })?.isError === true;
+  });
 
   pi.on("session_start", () => {
     released = false;
@@ -191,6 +200,7 @@ export default function jevReasoningRouter(pi: ExtensionAPI) {
     lastRequestModel = undefined;
     compactionObserved = undefined;
     turnFirstRequestPending = false;
+    lastToolIsError = undefined;
   });
 
   // Observation of compaction (read-only). It never touches the context (it only marks the log).
@@ -355,28 +365,33 @@ export default function jevReasoningRouter(pi: ExtensionAPI) {
         if (!firstOfTurn) {
           const facts = extractLoopFacts(payload.messages);
           facts.requestIndex = currentTurnRequestIndex; // per-turn index (③)
+          facts.lastToolIsError = lastToolIsError; // primary error signal (pi's own flag)
           const streak = loopStreakThreshold();
           const decision = loopDecision(facts, streak);
           if (decision) {
             const next = { ...payload, reasoning_effort: decision.level };
-            // ⑨ proper log context from the actual handler ctx
-            const loopCtx: Record<string, unknown> = {
+            // Properly typed loop record (correlation with the turn-start decision)
+            const loopRecord: LoopLogRecord = {
               v: 1,
               event: "loop",
               ts: new Date().toISOString(),
+              promptChars: pendingTurn?.log.promptChars ?? 0,
               n: currentTurnRequestIndex,
               level: decision.level,
               rule: decision.rule,
-              model: payloadModel,
-              // correlation with the turn-start decision record
+              ...(payloadModel ? { model: payloadModel } : {}),
               ...(lastDecision ? {
                 turnChoice: lastDecision.choice,
-                turnLevel: lastDecision.level,
+                turnRequestedLevel: lastDecision.level,
               } : {}),
               ...(ctx?.cwd ? { cwd: ctx.cwd } : {}),
             };
-            try { loopCtx.sessionId = ctx?.sessionManager?.getSessionId?.(); } catch { /* tests */ }
-            appendLogRecord(loopCtx as never);
+            try {
+              loopRecord.sessionId = ctx?.sessionManager?.getSessionId?.();
+              const sessionFile = ctx?.sessionManager?.getSessionFile?.();
+              if (sessionFile) loopRecord.sessionFile = sessionFile;
+            } catch { /* tests may lack session info */ }
+            appendLogRecord(loopRecord);
             return next;
           }
         }
