@@ -96,7 +96,31 @@ changed; nothing else about the session is touched.
 - **It is read-only for the session** — the extension never rewrites the conversation, the system prompt, the
   outgoing payload, or the transcript; it sets a level and appends an audit entry.
 
-### What the extension adds around the decision
+#### In-loop effort routing (optional, opt-in)
+
+Set `JEV_ROUTER_LOOP=1` to additionally route **every request inside a tool loop** (not just the
+turn start). This uses local heuristics only — no jev calls, no network, no added latency:
+
+| Rule | Condition | Level |
+|---|---|---|
+| tool-error | the latest tool result looks like an error | high |
+| streak ≥ N | 4+ (configurable) consecutive successful tool results | low |
+| early-loop | request ≤ 2 and a fresh tool result arrived | high |
+| ambiguous | none of the above | keeps the turn-start level |
+
+**Cache safety** (measured 2026-09-27): changing `reasoning_effort` between requests has **no impact
+on the DeepSeek prefix cache** (command-code-goat / deepseek-v4.1-flash: 87-95% hit maintained across
+all switch patterns — turn-boundary and in-loop). On zai (glm-5.3-flash with Preserved Thinking),
+each effort change costs one full cache-miss request before re-stabilizing; see
+[the research repository](https://github.com/pcparts001/pi-jev-reasoning-router-lite-research) for
+the full measurement matrix.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `JEV_ROUTER_LOOP` | *(unset = off)* | `1`/`true`/`on` enables in-loop routing |
+| `JEV_ROUTER_LOOP_STREAK` | `4` | streak threshold that triggers the downgrade to low (2-20) |
+
+## What the extension adds around the decision
 
 1. **An environment-driven model gate.** Only the `provider/id` entries in `JEV_ROUTER_MODELS` are routed. When
    the variable is unset or empty the extension does nothing at all — no jev call, no level change — so cost and

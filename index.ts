@@ -80,6 +80,12 @@ import {
   type PiThinkingLevel,
 } from "./router.ts";
 import type { EffortChoice } from "./criteria.ts";
+import {
+  extractLoopFacts,
+  loopDecision,
+  loopEnabled,
+  loopStreakThreshold,
+} from "./loop-rules.ts";
 
 /** appendEntry customType (never enters the model context, §3-3) */
 export const ENTRY_TYPE = "pi-jev-reasoning-router";
@@ -163,6 +169,8 @@ export default function jevReasoningRouter(pi: ExtensionAPI) {
   let lastRequestModel: string | undefined;
   /** Compaction observed between the previous turn and this one (**read-only**; marks the cache record) */
   let compactionObserved: CompactionObservation | undefined;
+  /** In-loop routing: request counter within the session (reset at session_start) */
+  let loopRequestCount = 0;
 
   pi.on("session_start", () => {
     released = false;
@@ -170,6 +178,7 @@ export default function jevReasoningRouter(pi: ExtensionAPI) {
     lastRequestAt = undefined;
     lastRequestModel = undefined;
     compactionObserved = undefined;
+    loopRequestCount = 0;
   });
 
   // Observation of compaction (read-only). It never touches the context (it only marks the log).
@@ -295,8 +304,13 @@ export default function jevReasoningRouter(pi: ExtensionAPI) {
     }
   });
 
-  // Measurement only (read): record the timestamp of the request to the provider (used to compute idleMs).
-  // **The payload is never rewritten** (the return value is always undefined = the request is sent as is).
+  // In-loop routing (opt-in, JEV_ROUTER_LOOP=1): local heuristics override the
+  // turn's thinking level on each request inside a tool loop. No jev calls.
+  // The payload IS rewritten here (reasoning_effort only) — this is the one place
+  // the original "never rewrite" contract is consciously broken, and only when the
+  // user opts in. The reasoning_effort parameter is NOT part of the DeepSeek prefix
+  // cache key (measured), so this does not affect cache hit rates on that route.
+  // On zai (glm-5.3) each effort change costs one full cache-miss request.
   pi.on("before_provider_request", (event) => {
     const now = Date.now();
     const payloadModel = readPayloadModel(event.payload);
@@ -308,6 +322,30 @@ export default function jevReasoningRouter(pi: ExtensionAPI) {
     }
     lastRequestAt = now;
     if (payloadModel) lastRequestModel = payloadModel;
+
+    // --- in-loop routing (the only payload-rewriting path) ---
+    if (loopEnabled()) {
+      const payload = event.payload as Record<string, unknown> | null;
+      if (payload && typeof payload === "object" && Array.isArray(payload.messages)) {
+        loopRequestCount += 1;
+        const facts = extractLoopFacts(payload.messages);
+        const streak = loopStreakThreshold();
+        const decision = loopDecision(facts, streak);
+        if (decision) {
+          const next = { ...payload, reasoning_effort: decision.level };
+          appendLogRecord(
+            buildLoopLogRecord({
+              ts: new Date().toISOString(),
+              cwd: undefined,
+              n: loopRequestCount,
+              level: decision.level,
+              rule: decision.rule,
+            }),
+          );
+          return next;
+        }
+      }
+    }
 
     // The following is diagnostics only (T2): nothing happens while JEV_ROUTER_DUMP is unset.
     const dumpPath = process.env[DUMP_ENV];
