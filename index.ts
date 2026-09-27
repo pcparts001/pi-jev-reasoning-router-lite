@@ -146,11 +146,10 @@ function observedContext(base: LogContext): LogContext {
 /** Count assistant messages after the LAST user message (per-turn request index) */
 function countRequestsSinceLastUser(messages: readonly unknown[]): number {
   let count = 0;
-  let seenLastUser = false;
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const m = messages[i] as { role?: string } | null;
     if (!m || typeof m !== "object") continue;
-    if (m.role === "user") { seenLastUser = true; break; }
+    if (m.role === "user") break;
     if (m.role === "assistant") count += 1;
   }
   return count;
@@ -369,6 +368,11 @@ export default function jevReasoningRouter(pi: ExtensionAPI) {
               level: decision.level,
               rule: decision.rule,
               model: payloadModel,
+              // correlation with the turn-start decision record
+              ...(lastDecision ? {
+                turnChoice: lastDecision.choice,
+                turnLevel: lastDecision.level,
+              } : {}),
               ...(ctx?.cwd ? { cwd: ctx.cwd } : {}),
             };
             try { loopCtx.sessionId = ctx?.sessionManager?.getSessionId?.(); } catch { /* tests */ }

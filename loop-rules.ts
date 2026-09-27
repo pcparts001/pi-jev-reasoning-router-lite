@@ -31,26 +31,34 @@ export interface LoopFacts {
 export type LoopDecision = { level: "low" | "high"; rule: string } | undefined;
 
 /**
- * Detect error-looking tool results. Deliberately strict to avoid false positives:
- * - requires an error INDICATOR (^, exit code, "Error:" prefix) not just the word "error"
- *   (a file named error.ts or "0 errors" in a grep result must NOT trigger this)
- * - checked on the first 400 chars only
+ * Detect error-looking tool results.
+ *
+ * Primary signal: pi's bash tool appends "Command exited with code N" on failure
+ * (N >= 1). This is the most reliable single indicator on the wire.
+ * Secondary: non-zero error/failure counts at line start (test runners, linters).
+ * Keyword matches (ENOENT, "No such file", etc.) are supplementary.
+ *
+ * Deliberately does NOT trigger on:
+ * - "0 errors" / "0 failed" (green runs; the count regex requires [1-9]\d*)
+ * - the word "error" in filenames, grep output, or prose
  */
 function looksLikeError(text: string): boolean {
   const head = text.slice(0, 400);
-  // explicit error prefixes / exits
+  // primary: pi's bash exit-code line (any non-zero)
+  if (/Command exited with code [1-9]\d*/i.test(head)) return true;
+  // explicit error prefix
   if (/^error:/i.test(head.trim())) return true;
-  if (/exit code [1-9]/i.test(head)) return true;
-  if (/\b(traceback|stack trace)\b/i.test(head) && /\berror\b|\bexception\b/i.test(head)) return true;
-  // common hard failures (with word boundaries to avoid filename matches)
+  // non-zero error/failure counts at line start (excludes "0 errors", "0 failed")
+  if (/^\s*[1-9]\d* (error|failure|failed)s?\b/im.test(head)) return true;
+  // traceback/stack trace
+  if (/\b(traceback|stack trace)\b/i.test(head) && /\b(error|exception)\b/i.test(head)) return true;
+  // filesystem failures
   if (/\b(enoent|eacces|eperm)\b/i.test(head)) return true;
   if (/\bno such file or directory\b/i.test(head)) return true;
-  if (/\b(permission denied)\b/i.test(head)) return true;
+  if (/\bpermission denied\b/i.test(head)) return true;
   if (/\bcommand not found\b/i.test(head)) return true;
-  // programming errors (exact word, not filenames)
+  // specific programming errors (word-boundary, not filename fragments)
   if (/\b(syntaxerror|typeerror|referenceerror|rangeerror)\b/i.test(head)) return true;
-  // "N errors" or "N failed" at a line start (test runners)
-  if (/^\s*\d+ (error|failure|failed)/im.test(head)) return true;
   return false;
 }
 
