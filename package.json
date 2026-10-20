@@ -1,6 +1,6 @@
 {
   "name": "pi-jev-reasoning-router-lite",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "description": "Jev decision-based thinking-level routing for Pi Agent — switch the routed model's reasoning level per prompt",
   "type": "module",

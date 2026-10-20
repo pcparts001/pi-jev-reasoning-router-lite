@@ -324,6 +324,22 @@ ctx.model matches JEV_ROUTER_MODELS
   prompts until the next decision changes it.
 - A model that is not in the allowlist is left completely alone (its own level setting stays as you set it).
 
+#### Runs started by an extension message (Pi 1.2+)
+
+Pi 1.2 changed `before_agent_start` so that it also fires for runs started by an extension message
+(`pi.sendMessage(..., { triggerTurn: true })`), for example a subagent completion notice or a message relayed by a
+chat bridge. Those runs carry `messageType: "custom"` and have **no `event.prompt`**.
+
+| Run kind | `messageType` | `event.prompt` | What this extension does |
+|---|---|---|---|
+| User prompt | `"user"` | present | full turn-start routing (jev + level change) |
+| Extension message | `"custom"` | **absent** | records `skip` / reason `no-user-prompt`, keeps the current level |
+| Pi < 1.2 (either) | absent | present | full turn-start routing (only user runs reach the event) |
+
+An extension-started run has no user prompt to judge, so it is not routed; in-loop routing
+(`JEV_ROUTER_LOOP=1`) may still adjust `reasoning_effort` inside its tool loops. Before 2026-10-20 this case threw
+`TypeError: Cannot read properties of undefined (reading 'length')` on Pi 1.2+, which made Pi drop the handler.
+
 ### Commands
 
 | Command | Behavior | Gate |
@@ -390,6 +406,10 @@ What pi then sends depends on the routed model. On the Command Code route only `
 - **`max_tokens` is the model default (384,000);** measurements elsewhere showed 32,768 truncating hard tasks.
 - **The allowlist is the only safety valve.** If you point it at a model whose `models.json` lacks
   `compat.supportsReasoningEffort`, the extension will run but the level changes will have no effect.
+- **Extension-started runs are not routed on Pi < 1.2.** Up to Pi 1.1, `before_agent_start` only fires for real
+  user prompts, so a run started by `pi.sendMessage(..., { triggerTurn: true })` (subagent completion notices, chat
+  bridges, scheduled wakes) keeps whatever thinking level the session already had. From Pi 1.2 the event does
+  fire for those runs, and this extension records them as `skip` / `no-user-prompt` instead of routing them.
 
 ## License
 

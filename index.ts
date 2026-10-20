@@ -2,7 +2,7 @@
  * D_08_A8 router (pi agent extension entry point)
  *
  * Behavior (design spec §3-2 / §3-3 / §4-4):
- *   before_agent_start (receives event.prompt)
+ *   before_agent_start (user prompts only; receives event.prompt)
  *     -> call jev (3s timeout, 1 retry)
  *          +- success: choice in {none, low, high}
  *          +- failure: fail-safe = high
@@ -10,6 +10,11 @@
  *     -> pi.setThinkingLevel(level)
  *     -> pi.appendEntry("pi-jev-reasoning-router", { choice, level, at, latencyMs, ... })
  *     -> when low is applied, one dim line is shown in the UI (JEV_ROUTER_NOTIFY, default "low")
+ *
+ *   Pi 1.2+ also fires `before_agent_start` for runs started by an extension message
+ *   (`pi.sendMessage(..., { triggerTurn: true })`). Those carry `messageType: "custom"` and no
+ *   `event.prompt`, so they are recorded as `skip` / reason `no-user-prompt` and left alone;
+ *   in-loop routing may still act on them. On Pi < 1.2 this event only fires for user prompts.
  *
  *   message_end (after an assistant response) / agent_end (end of turn)
  *     -> record input cache (prompt cache) measurements in the log (`event: "cache"`)
@@ -81,6 +86,7 @@ import {
   type PendingTurn,
   type PiThinkingLevel,
   type RoutedModelLike,
+  type RouteSkipReason,
 } from "./router.ts";
 import type { EffortChoice } from "./criteria.ts";
 import {
@@ -115,8 +121,8 @@ interface Decision {
 }
 
 /** Log context for one prompt (sessionId / sessionFile are used to join with the session) */
-function logContext(ctx: ExtensionContext, prompt: string, model: string | undefined): LogContext {
-  const base: LogContext = { ts: new Date().toISOString(), promptChars: prompt.length };
+function logContext(ctx: ExtensionContext, promptChars: number, model: string | undefined): LogContext {
+  const base: LogContext = { ts: new Date().toISOString(), promptChars };
   try {
     base.sessionId = ctx.sessionManager.getSessionId();
     const file = ctx.sessionManager.getSessionFile();
@@ -223,15 +229,36 @@ export default function jevReasoningRouter(pi: ExtensionAPI) {
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
+    // Pi 1.2+ fires this event for runs started by an extension message
+    // (`pi.sendMessage(..., { triggerTurn: true })`) as well as for user prompts.
+    // Those runs carry `messageType: "custom"` and have **no `event.prompt`**.
+    // Reading `event.prompt` there threw `TypeError: Cannot read properties of undefined`
+    // and the whole handler was dropped by Pi's extension runner.
+    //
+    // Such a run has no user prompt to route, so the turn-start decision is left alone:
+    // only in-loop routing (`before_provider_request`) may still act on it.
+    // `messageType` is absent on Pi < 1.2, where only user runs reach this event.
+    const userPrompt: string | undefined =
+      typeof (event as { prompt?: unknown }).prompt === "string"
+        ? ((event as { prompt: string }).prompt)
+        : undefined;
+    const isExtensionRun = userPrompt === undefined;
+    const promptChars = userPrompt?.length ?? 0;
+
     // Model gate: for a model that does not match the allowlist (`JEV_ROUTER_MODELS`)
     // jev is not called and the thinking level is not changed (so neither billing nor latency happens).
     // When the variable is unset the allowlist is empty, so every model stops here.
     const route = routeDecision(ctx.model);
-    if (!route.routed) {
-      // A non-routed model's turn is excluded from cache measurement (do not carry over correlation info)
+    const skipReason: RouteSkipReason | undefined = isExtensionRun
+      ? "no-user-prompt"
+      : route.routed
+        ? undefined
+        : route.reason;
+    if (skipReason !== undefined) {
+      // This run is excluded from cache measurement (do not carry over correlation info)
       pendingTurn = undefined;
       pi.appendEntry(ENTRY_TYPE, {
-        skipped: route.reason,
+        skipped: skipReason,
         model: route.model ?? null,
         allowed: route.allowed,
         at: Date.now(),
@@ -239,21 +266,23 @@ export default function jevReasoningRouter(pi: ExtensionAPI) {
       // Run log (so that "how often it did not run" can be analyzed later too)
       appendLogRecord(
         buildSkipLogRecord({
-          ...logContext(ctx, event.prompt, route.model),
-          reason: route.reason,
+          ...logContext(ctx, promptChars, route.model),
+          reason: skipReason,
           allowed: route.allowed,
         }),
       );
       return;
     }
 
+    // Narrowed by the `skipReason !== undefined` return above; kept explicit for the type checker.
+    const prompt = userPrompt as string;
     const previousLevel = pi.getThinkingLevel();
-    const decision = await decide(event.prompt, ctx.signal, inFlight);
+    const decision = await decide(prompt, ctx.signal, inFlight);
     lastDecision = decision;
     pi.setThinkingLevel(decision.level);
     // pi clamps according to model capabilities, so record the value that was actually adopted too
     const effectiveLevel = pi.getThinkingLevel();
-    const context = logContext(ctx, event.prompt, route.model);
+    const context = logContext(ctx, promptChars, route.model);
     // Prepare the correlation info for input cache measurement (**nothing sent yet**; written after the response)
     pendingTurn = {
       log: context,

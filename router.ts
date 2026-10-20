@@ -155,7 +155,10 @@ export type RouteSkipReason =
   | "model-unknown"
   | "no-allowed-models"
   | "model-not-allowed"
-  | "no-reasoning";
+  | "no-reasoning"
+  /** The run was started by an extension message (Pi 1.2+ `messageType: "custom"`); there is no user
+   *  prompt to route, so the turn-start decision is left alone and only in-loop routing may act. */
+  | "no-user-prompt";
 
 export type RouteDecision =
   | { routed: true; model: string; allowed: string[] }
